@@ -150,6 +150,7 @@ export default function App() {
   const [pantrySearch, setPantrySearch] = useState("");
   const [inventoryEdit, setInventoryEdit] = useState(null);
   const [addItem, setAddItem] = useState({ name:"", category:"Cabinet", store:"Aldi", price:"", store2:"", price2:"", low_threshold:"A Little" });
+  const [pantryCheckSavings, setPantryCheckSavings] = useState({}); // { mealId: { savings: number, checks: {} } }
 
   const loadData = useCallback(async () => {
     const [{ data: mealsData }, { data: recipesData }, { data: pantryData }] = await Promise.all([
@@ -288,7 +289,8 @@ export default function App() {
     const r=recipes.find(x=>x.id===m.recipe_id);
     return r?(r.ingredients||[]).filter(i=>i.price).map(i=>i.price):[];
   }).reduce((s,p)=>s+p,0);
-  const currentMonthSpent = weeklySpend[CURRENT_WEEK]||0;
+  const totalPantryCheckSavings = Object.values(pantryCheckSavings).reduce((s,v)=>s+v,0);
+  const currentMonthSpent = Math.max(0,(weeklySpend[CURRENT_WEEK]||0) - totalPantryCheckSavings);
   const totalSpent = Object.values(weeklySpend).reduce((a,b)=>a+b,0);
   const budgetPct = Math.min(100,(currentMonthSpent/MONTHLY_BUDGET)*100);
   const overBudget = currentMonthSpent>MONTHLY_BUDGET;
@@ -440,13 +442,20 @@ export default function App() {
   };
 
   // ── Pantry Check Modal ────────────────────────────────────────────────────
-  const PantryCheckModal = ({ recipe, onClose }) => {
-    const key = recipe.id;
-    const checks = pantryChecks[key] || {};
+  const PantryCheckModal = ({ recipe, mealId, onClose }) => {
+    const checks = pantryChecks[mealId] || {};
     const toggle = (idx, status) => {
-      setPantryChecks(prev=>({ ...prev, [key]:{ ...prev[key], [idx]:prev[key]?.[idx]===status?null:status } }));
+      const newChecks = { ...checks, [idx]: checks[idx]===status ? null : status };
+      setPantryChecks(prev=>({ ...prev, [mealId]: newChecks }));
+      // Recalculate savings for this meal
+      const saved = (recipe.ingredients||[]).reduce((sum, ing, i) => {
+        if (newChecks[i]==="had" && ing.price) return sum + ing.price;
+        return sum;
+      }, 0);
+      setPantryCheckSavings(prev=>({ ...prev, [mealId]: saved }));
     };
     const needToBuy = (recipe.ingredients||[]).filter((_,i)=>checks[i]!=="had");
+    const savedAmt = (recipe.ingredients||[]).reduce((sum,ing,i)=>{ if(checks[i]==="had"&&ing.price) return sum+ing.price; return sum; },0);
     return (
       <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.65)",display:"flex",alignItems:"flex-end",justifyContent:"center",zIndex:200}}>
         <div style={{background:"#faf9f6",borderRadius:"22px 22px 0 0",width:"100%",maxWidth:560,maxHeight:"85vh",overflowY:"auto"}}>
@@ -479,8 +488,13 @@ export default function App() {
                 </div>
               );
             })}
+            {savedAmt>0&&(
+              <div style={{background:"#edfaf4",border:"1px solid #7ec8a0",borderRadius:10,padding:"10px 14px",marginTop:12,fontFamily:"sans-serif",fontSize:13,color:"#2e7d5e"}}>
+                💰 Saving <strong>${savedAmt.toFixed(2)}</strong> this meal — already had these items!
+              </div>
+            )}
             {needToBuy.length>0&&(
-              <div style={{marginTop:16}}>
+              <div style={{marginTop:12}}>
                 <button onClick={()=>{
                   needToBuy.forEach(ing=>{ const p=pantry.find(p=>ing.name.toLowerCase().includes(p.name.toLowerCase().substring(0,6))); addToGrocery(ing.name.split("—")[0].split("(")[0].trim(),(p?.store)||"Aldi",ing.price||null); });
                   onClose();
@@ -517,11 +531,27 @@ export default function App() {
           </button>
         </div>
 
-        {lowPantry.length>0&&(
-          <div style={{margin:"0 12px 8px",background:"rgba(192,57,43,0.3)",border:"1px solid rgba(192,57,43,0.5)",borderRadius:8,padding:"5px 12px",fontFamily:"sans-serif",fontSize:11,color:"#ffd0c8"}}>
-            ⚠️ Low: {lowPantry.slice(0,4).map(i=>i.name).join(", ")}{lowPantry.length>4?` +${lowPantry.length-4} more`:""}
-          </div>
-        )}
+        {/* Notifications bar */}
+        {(()=>{
+          const swapRequests = weekMeals.filter(m=>m.meal_type==="dinner"&&(m.ian==="disagree"||m.kayla==="disagree"));
+          const ianNotes = weekMeals.filter(m=>m.ian_note&&m.ian_note.trim()!=="");
+          const notifications = [
+            ...swapRequests.map(m=>({ text:`👎 ${m.ian==="disagree"?"Ian":"Kayla"} requested a swap for ${m.day}'s ${m.name}`, color:"#ffd0c8", bg:"rgba(192,57,43,0.35)", border:"rgba(192,57,43,0.5)" })),
+            ...ianNotes.filter(m=>!swapRequests.find(s=>s.id===m.id)).map(m=>({ text:`💬 Ian left a note on ${m.day}'s ${m.name}`, color:"#e8c98a", bg:"rgba(176,129,58,0.3)", border:"rgba(176,129,58,0.5)" })),
+            ...(lowPantry.length>0?[{ text:`⚠️ Low stock: ${lowPantry.slice(0,3).map(i=>i.name).join(", ")}${lowPantry.length>3?` +${lowPantry.length-3} more`:""}`, color:"#ffd0c8", bg:"rgba(192,57,43,0.25)", border:"rgba(192,57,43,0.4)" }]:[]),
+            ...(totalPantryCheckSavings>0?[{ text:`💰 Saving $${totalPantryCheckSavings.toFixed(2)} this week from pantry items`, color:"#a0d4b8", bg:"rgba(46,125,94,0.25)", border:"rgba(46,125,94,0.4)" }]:[]),
+          ];
+          if (!notifications.length) return null;
+          return (
+            <div style={{margin:"0 12px 8px",display:"flex",flexDirection:"column",gap:4}}>
+              {notifications.map((n,i)=>(
+                <div key={i} style={{background:n.bg,border:`1px solid ${n.border}`,borderRadius:8,padding:"5px 12px",fontFamily:"sans-serif",fontSize:11,color:n.color}}>
+                  {n.text}
+                </div>
+              ))}
+            </div>
+          );
+        })()}
 
         {/* 7-day calendar strip with emoji + meal name */}
         {activeTab==="week"&&(
@@ -537,7 +567,7 @@ export default function App() {
                   style={{flex:1,minWidth:44,background:isSelected?"rgba(176,129,58,0.4)":"transparent",border:"none",borderBottom:isSelected?"3px solid #b0813a":"3px solid transparent",padding:"6px 2px 8px",color:hasMeals?"#fff":"rgba(255,255,255,0.25)",fontFamily:"sans-serif",cursor:hasMeals?"pointer":"default",textAlign:"center"}}>
                   <div style={{fontSize:9,textTransform:"uppercase",letterSpacing:0.5,color:hasMeals?"#b0c9b0":"rgba(255,255,255,0.2)"}}>{DAY_SHORT[day]}</div>
                   <div style={{fontSize:15,margin:"2px 0"}}>{hasMeals?(dinner?.emoji||DAY_EMOJIS[day]):"·"}</div>
-                  {dinner&&<div style={{fontSize:8,color:allGood?"#a0d4b8":"rgba(255,255,255,0.5)",lineHeight:1.2,maxWidth:44,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",margin:"0 auto"}}>{dinner.name.split(" ").slice(0,2).join(" ")}</div>}
+                  {dinner&&<div style={{fontSize:8,color:allGood?"#a0d4b8":"rgba(255,255,255,0.5)",lineHeight:1.2,maxWidth:52,wordBreak:"break-word",margin:"0 auto",whiteSpace:"normal"}}>{dinner.name}</div>}
                 </button>
               );
             })}
@@ -657,7 +687,7 @@ export default function App() {
                                   <div style={{fontSize:11,fontFamily:"sans-serif",color:"#bbb",fontStyle:"italic",alignSelf:"center"}}>Recipe TBD</div>
                                 )}
                                 {linkedRecipe&&(
-                                  <button onClick={()=>setPantryCheckModal(linkedRecipe)}
+                                  <button onClick={()=>setPantryCheckModal({recipe:linkedRecipe, mealId:meal.id})}
                                     style={{background:"#eef6ff",color:"#2a5a8a",border:"1px solid #b0d4f4",borderRadius:8,padding:"7px 14px",fontSize:12,fontFamily:"sans-serif",cursor:"pointer"}}>
                                     🥫 Pantry Check
                                   </button>
@@ -1006,6 +1036,7 @@ export default function App() {
               </div>
             </div>
             {projectedSpend>0&&<div style={{fontFamily:"sans-serif",fontSize:12,color:"#b0813a",marginTop:8}}>📊 Projected from planned meals: <strong>${projectedSpend.toFixed(2)}</strong></div>}
+            {totalPantryCheckSavings>0&&<div style={{fontFamily:"sans-serif",fontSize:12,color:"#2e7d5e",marginTop:6}}>🥫 Saved from pantry: <strong>-${totalPantryCheckSavings.toFixed(2)}</strong></div>}
           </div>
 
           <div style={{background:"#fff",border:"1px solid #e0dbd0",borderRadius:14,padding:"18px",marginBottom:16}}>
@@ -1063,7 +1094,7 @@ export default function App() {
 
       {/* Modals */}
       {recipeModal&&<RecipeModal recipe={recipeModal} onClose={()=>setRecipeModal(null)}/>}
-      {pantryCheckModal&&<PantryCheckModal recipe={pantryCheckModal} onClose={()=>setPantryCheckModal(null)}/>}
+      {pantryCheckModal&&<PantryCheckModal recipe={pantryCheckModal.recipe} mealId={pantryCheckModal.mealId} onClose={()=>setPantryCheckModal(null)}/>}
       {modal&&(
         <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"flex-end",justifyContent:"center",zIndex:150}}>
           <div style={{background:"#fff",borderRadius:"18px 18px 0 0",padding:24,width:"100%",maxWidth:500}}>

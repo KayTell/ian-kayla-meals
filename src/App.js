@@ -25,6 +25,7 @@ function generateWeeks(startDate, endDate) {
   }
   return weeks;
 }
+// Get current week key in YYYY-MM-DD format matching database
 const TODAY_KEY = getWeekKey(new Date().toISOString().slice(0,10));
 const ALL_WEEKS = generateWeeks("2025-06-23", "2026-12-28");
 const DAY_ORDER = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
@@ -108,7 +109,7 @@ const initialPantryData = [
   {id:"p39",name:"Chocolate Chips",category:"Fridge",qty:"A Lot",low_threshold:"A Little",store:"Aldi",price:null,store2:null,price2:null},
   {id:"p40",name:"Short Ribs",category:"Freezer",qty:"Enough",low_threshold:"A Little",store:"Giant",price:null,store2:null,price2:null},
   {id:"p41",name:"Chicken Breasts (5lb)",category:"Freezer",qty:"A Lot",low_threshold:"A Little",store:"Instacart",price:10.95,store2:null,price2:null},
-  {id:"p42",name:"Wings (16)",category:"Freezer",qty:"Enough",low_threshold:"A Little",store:"Aldi",price:null,store2:null,price2:null},
+  {id:"p42",name:"Chicken Wings",category:"Freezer",qty:"1",low_threshold:"1",store:"Aldi",price:null,store2:null,price2:null},
   {id:"p43",name:"Hotdogs",category:"Freezer",qty:"Enough",low_threshold:"A Little",store:"Aldi",price:null,store2:null,price2:null},
   {id:"p44",name:"Patty Sausage",category:"Freezer",qty:"Enough",low_threshold:"A Little",store:"Aldi",price:null,store2:null,price2:null},
   {id:"p45",name:"Frozen Waffles",category:"Freezer",qty:"Enough",low_threshold:"A Little",store:"Aldi",price:null,store2:null,price2:null},
@@ -167,16 +168,15 @@ export default function App() {
       supabase.from("pantry").select("*"),
       supabase.from("grocery").select("*"),
     ]);
-    // Seed meals + recipes if empty
-    if (mealsData && mealsData.length===0 && !seeded) {
-      await supabase.from("meals").insert(initialMeals);
-      await supabase.from("recipes").insert(initialRecipes.map(r=>({...r,dishes:JSON.stringify(r.dishes),freezer_items:JSON.stringify(r.freezer_items),ingredients:JSON.stringify(r.ingredients),steps:JSON.stringify(r.steps)})));
-      setMeals(initialMeals); setRecipes(initialRecipes);
-    } else {
-      setMeals(mealsData||[]);
-      setRecipes((recipesData||[]).map(r=>({...r,dishes:typeof r.dishes==="string"?JSON.parse(r.dishes):r.dishes||[],freezer_items:typeof r.freezer_items==="string"?JSON.parse(r.freezer_items):r.freezer_items||[],ingredients:typeof r.ingredients==="string"?JSON.parse(r.ingredients):r.ingredients||[],steps:typeof r.steps==="string"?JSON.parse(r.steps):r.steps||[]})));
-    }
-    // Seed pantry if empty
+    // Always load from database - never re-seed if data exists
+    setMeals(mealsData||[]);
+    setRecipes((recipesData||[]).map(r=>({...r,
+      dishes:typeof r.dishes==="string"?JSON.parse(r.dishes):r.dishes||[],
+      freezer_items:typeof r.freezer_items==="string"?JSON.parse(r.freezer_items):r.freezer_items||[],
+      ingredients:typeof r.ingredients==="string"?JSON.parse(r.ingredients):r.ingredients||[],
+      steps:typeof r.steps==="string"?JSON.parse(r.steps):r.steps||[]
+    })));
+    // Seed pantry only if completely empty
     if (pantryData && pantryData.length===0 && !seeded) {
       await supabase.from("pantry").insert(initialPantryData);
       setPantry(initialPantryData); setSeeded(true);
@@ -230,17 +230,64 @@ export default function App() {
   };
 
   const planDay=(dayId,recipe)=>{
-    updateMeal(dayId,{recipe_id:recipe.id,name:recipe.name,emoji:recipe.name.match(/^\p{Emoji}/u)?.[0]||"🍽️",description:`${recipe.description||""}`,status:"draft",meal_type:"meal",takeout_restaurant:null,kayla_order:null,ian_order:null,takeout_cost:null});
+    const existing=meals.find(m=>m.id===dayId);
+    updateMeal(dayId,{
+      recipe_id:recipe.id,
+      original_recipe_id:existing?.recipe_id||existing?.original_recipe_id||null,
+      name:recipe.name,
+      emoji:recipe.name.match(/^[^\w\s]+/)?.[0]||"🍽️",
+      description:recipe.description||"",
+      status:"draft",
+      meal_type:"meal",
+      takeout_restaurant:null,
+      kayla_order:null,
+      ian_order:null,
+      takeout_cost:null,
+      swap_suggestion:null,
+      swap_name:null
+    });
     setShowPlanDay(null);
   };
   const planTakeout=(dayId,restaurant)=>{
-    updateMeal(dayId,{name:`Takeout — ${restaurant.name}`,emoji:restaurant.emoji,description:`Order from ${restaurant.name}`,status:"draft",meal_type:"takeout",takeout_restaurant:restaurant.name,kayla_order:"",ian_order:"",takeout_cost:"",recipe_id:null});
+    const existing=meals.find(m=>m.id===dayId);
+    updateMeal(dayId,{
+      name:`Takeout — ${restaurant.name}`,
+      emoji:restaurant.emoji,
+      description:`Order from ${restaurant.name}`,
+      status:"draft",
+      meal_type:"takeout",
+      takeout_restaurant:restaurant.name,
+      kayla_order:"",
+      ian_order:"",
+      takeout_cost:"",
+      original_recipe_id:existing?.recipe_id||existing?.original_recipe_id||null,
+      recipe_id:null,
+      swap_suggestion:null,
+      swap_name:null
+    });
     setShowTakeoutModal(null);
   };
   const revertToMeal=(id)=>{
-    const backup=mealBackup[id];
-    if(backup&&backup.meal_type==="meal"){ updateMeal(id,backup); setMealBackup(prev=>({...prev,[id]:null})); }
-    else { updateMeal(id,{meal_type:"meal",name:"Not planned",emoji:"❓",description:"Tap to plan",status:"unplanned",takeout_restaurant:null,kayla_order:null,ian_order:null,takeout_cost:null,recipe_id:null}); }
+    const meal=meals.find(m=>m.id===id);
+    const origRecipeId=meal?.original_recipe_id;
+    const origRecipe=origRecipeId?recipes.find(r=>r.id===origRecipeId):null;
+    if(origRecipe){
+      updateMeal(id,{
+        meal_type:"meal",
+        recipe_id:origRecipeId,
+        original_recipe_id:null,
+        name:origRecipe.name,
+        emoji:origRecipe.name.match(/^[^\w\s]+/)?.[0]||"🍽️",
+        description:origRecipe.description||"",
+        status:"draft",
+        takeout_restaurant:null,
+        kayla_order:null,
+        ian_order:null,
+        takeout_cost:null
+      });
+    } else {
+      updateMeal(id,{meal_type:"meal",name:"Not planned yet",emoji:"❓",description:"Tap Plan Day to choose a meal",status:"draft",takeout_restaurant:null,kayla_order:null,ian_order:null,takeout_cost:null,recipe_id:null,original_recipe_id:null});
+    }
   };
 
   // Thaw
@@ -539,7 +586,21 @@ Total spent: $${totalSpent.toFixed(2)} of $500`;
               </div>
 
               {["breakfast","lunch","dinner"].map(type=>{
-                const typeMeals=dayMeals.filter(m=>m.meal_type===type||(type==="dinner"&&m.meal_type==="takeout")||(type==="dinner"&&m.meal_type==="unplanned"));
+                const typeMeals=dayMeals.filter(m=>m.meal_type===type||(type==="dinner"&&m.meal_type==="takeout")||(type==="dinner"&&m.meal_type==="unplanned")||(type==="dinner"&&!m.meal_type));
+                // Show a plan button if dinner has no meals at all
+                if(!typeMeals.length && type==="dinner") return(
+                  <div key={type} style={{marginBottom:16}}>
+                    <div style={{fontSize:10,fontFamily:"sans-serif",letterSpacing:2,textTransform:"uppercase",color:"#1c5a38",marginBottom:6}}>🌙 Dinner</div>
+                    <div style={{background:"#fff",borderRadius:14,border:"2px dashed #e0dbd0",padding:"20px 14px",textAlign:"center"}}>
+                      <div style={{fontSize:22,marginBottom:6}}>🍽️</div>
+                      <div style={{fontFamily:"sans-serif",fontSize:13,color:"#888",marginBottom:12}}>Nothing planned yet</div>
+                      <div style={{display:"flex",gap:8,justifyContent:"center"}}>
+                        <button onClick={()=>setShowPlanDay(`${selectedDay}-dinner-${selectedWeek}`)} style={{background:G,color:"#fff",border:"none",borderRadius:10,padding:"9px 16px",fontFamily:"sans-serif",fontSize:12,cursor:"pointer"}}>📖 Plan from Recipes</button>
+                        <button onClick={()=>setShowTakeoutModal(`${selectedDay}-dinner-${selectedWeek}`)} style={{background:"#e67e22",color:"#fff",border:"none",borderRadius:10,padding:"9px 16px",fontFamily:"sans-serif",fontSize:12,cursor:"pointer"}}>🥡 Takeout</button>
+                      </div>
+                    </div>
+                  </div>
+                );
                 if(!typeMeals.length)return null;
                 const tc=mealTypeColors[type]||mealTypeColors.dinner;
                 return(
@@ -888,10 +949,70 @@ Total spent: $${totalSpent.toFixed(2)} of $500`;
       {confirmModal&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:150,padding:20}}><div style={{background:"#fff",borderRadius:16,padding:22,width:"100%",maxWidth:360}}><div style={{fontFamily:"sans-serif",fontWeight:"bold",fontSize:15,marginBottom:6,color:"#1c2a1c"}}>⚠️ Are you sure?</div><div style={{fontFamily:"sans-serif",fontSize:13,color:"#555",marginBottom:16}}>You're about to {confirmModal.type==="takeout"?"change this to takeout":"change this meal"}. This will replace <strong>{confirmModal.mealName}</strong>. You can undo after.</div><div style={{display:"flex",gap:8}}><button onClick={confirmMealChange} style={{flex:1,background:confirmModal.type==="takeout"?"#e67e22":G,color:"#fff",border:"none",borderRadius:8,padding:11,fontSize:13,fontFamily:"sans-serif",cursor:"pointer"}}>{confirmModal.type==="takeout"?"🥡 Yes, Takeout":"🔄 Yes, Change"}</button><button onClick={()=>setConfirmModal(null)} style={{flex:1,background:"#f4f4f2",color:"#555",border:"none",borderRadius:8,padding:11,fontSize:13,fontFamily:"sans-serif",cursor:"pointer"}}>Cancel</button></div></div></div>}
 
       {/* Plan day */}
-      {showPlanDay&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",display:"flex",alignItems:"flex-end",justifyContent:"center",zIndex:150}}><div style={{background:"#faf9f6",borderRadius:"22px 22px 0 0",width:"100%",maxWidth:560,maxHeight:"80vh",overflowY:"auto",padding:"18px 14px 40px"}}><div style={{fontFamily:"sans-serif",fontWeight:"bold",fontSize:15,color:"#1c2a1c",marginBottom:10}}>📖 Plan This Day</div>{recipes.map(r=><button key={r.id} onClick={()=>planDay(showPlanDay,r)} style={{width:"100%",background:"#fff",color:"#333",border:"1px solid #e0dbd0",borderRadius:10,padding:"12px 14px",fontFamily:"sans-serif",fontSize:13,cursor:"pointer",marginBottom:6,textAlign:"left",display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div>{r.name}</div><div style={{fontSize:10,color:"#aaa",marginTop:2}}>⏱ {r.cook_time}</div></div><span style={{fontSize:10,color:r.status==="confirmed"?"#5a3d8a":"#b0813a"}}>{r.status==="confirmed"?"🔒":"📝"}</span></button>)}<button onClick={()=>{setShowTakeoutModal(showPlanDay);setShowPlanDay(null);}} style={{width:"100%",background:"#fef5ec",color:"#e67e22",border:"1px solid #f0c96e",borderRadius:10,padding:"12px",fontFamily:"sans-serif",fontSize:13,cursor:"pointer",marginBottom:6}}>🥡 Takeout Instead</button><button onClick={()=>setShowPlanDay(null)} style={{width:"100%",background:"#f4f4f2",color:"#555",border:"none",borderRadius:10,padding:"11px",fontFamily:"sans-serif",fontSize:13,cursor:"pointer"}}>Cancel</button></div></div>}
+      {showPlanDay&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",display:"flex",alignItems:"flex-end",justifyContent:"center",zIndex:150}}><div style={{background:"#faf9f6",borderRadius:"22px 22px 0 0",width:"100%",maxWidth:560,maxHeight:"80vh",overflowY:"auto",padding:"18px 14px 40px"}}>
+        <div style={{fontFamily:"sans-serif",fontWeight:"bold",fontSize:15,color:"#1c2a1c",marginBottom:10}}>📖 Plan This Day</div>
+        {recipes.map(r=><button key={r.id} onClick={async()=>{
+          // If planning a new meal for a day (no existing meal row), insert one
+          const existingMeal=meals.find(m=>m.id===showPlanDay);
+          if(!existingMeal){
+            // Parse day from the composite key: "Monday-dinner-2026-06-29"
+            const parts=showPlanDay.split("-dinner-");
+            const day=parts[0];
+            const weekKey=parts[1];
+            const newMeal={
+              id:`${day.toLowerCase()}-d-${Date.now()}`,
+              week_key:weekKey,
+              day:day,
+              date:"",
+              meal_type:"meal",
+              emoji:r.name.match(/^[^\w\s]+/)?.[0]||"🍽️",
+              name:r.name,
+              description:r.description||"",
+              store:r.store||null,
+              store_type:"instacart",
+              cook:null,
+              status:"draft",
+              ian:null,ian_note:"",kayla:null,kayla_note:"",cook_note:"",day_note:"",
+              recipe_id:r.id,original_recipe_id:null,swap_suggestion:null,swap_name:null,
+              takeout_restaurant:null,kayla_order:null,ian_order:null,takeout_cost:null
+            };
+            setMeals(prev=>[...prev,newMeal]);
+            await supabase.from("meals").insert(newMeal);
+          } else {
+            planDay(showPlanDay,r);
+          }
+          setShowPlanDay(null);
+        }} style={{width:"100%",background:"#fff",color:"#333",border:"1px solid #e0dbd0",borderRadius:10,padding:"12px 14px",fontFamily:"sans-serif",fontSize:13,cursor:"pointer",marginBottom:6,textAlign:"left",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div><div>{r.name}</div><div style={{fontSize:10,color:"#aaa",marginTop:2}}>⏱ {r.cook_time}</div></div>
+          <span style={{fontSize:10,color:r.status==="confirmed"?"#5a3d8a":"#b0813a"}}>{r.status==="confirmed"?"🔒":"📝"}</span>
+        </button>)}
+        <button onClick={()=>{setShowTakeoutModal(showPlanDay);setShowPlanDay(null);}} style={{width:"100%",background:"#fef5ec",color:"#e67e22",border:"1px solid #f0c96e",borderRadius:10,padding:"12px",fontFamily:"sans-serif",fontSize:13,cursor:"pointer",marginBottom:6}}>🥡 Takeout Instead</button>
+        <button onClick={()=>setShowPlanDay(null)} style={{width:"100%",background:"#f4f4f2",color:"#555",border:"none",borderRadius:10,padding:"11px",fontFamily:"sans-serif",fontSize:13,cursor:"pointer"}}>Cancel</button>
+      </div></div>}
 
       {/* Takeout */}
-      {showTakeoutModal&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",display:"flex",alignItems:"flex-end",justifyContent:"center",zIndex:150}}><div style={{background:"#faf9f6",borderRadius:"22px 22px 0 0",width:"100%",maxWidth:560,maxHeight:"80vh",overflowY:"auto",padding:"18px 14px 40px"}}><div style={{fontFamily:"sans-serif",fontWeight:"bold",fontSize:15,color:"#1c2a1c",marginBottom:10}}>🥡 Where are you ordering from?</div>{RESTAURANTS.map(r=><button key={r.name} onClick={()=>planTakeout(showTakeoutModal,r)} style={{width:"100%",background:"#fff",color:"#333",border:"1px solid #e0dbd0",borderRadius:10,padding:"11px 14px",fontFamily:"sans-serif",fontSize:13,cursor:"pointer",marginBottom:5,textAlign:"left"}}>{r.emoji} {r.name}</button>)}<button onClick={()=>setShowTakeoutModal(null)} style={{width:"100%",background:"#f4f4f2",color:"#555",border:"none",borderRadius:10,padding:"11px",fontFamily:"sans-serif",fontSize:13,cursor:"pointer",marginTop:4}}>Cancel</button></div></div>}
+      {showTakeoutModal&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",display:"flex",alignItems:"flex-end",justifyContent:"center",zIndex:150}}><div style={{background:"#faf9f6",borderRadius:"22px 22px 0 0",width:"100%",maxWidth:560,maxHeight:"80vh",overflowY:"auto",padding:"18px 14px 40px"}}>
+        <div style={{fontFamily:"sans-serif",fontWeight:"bold",fontSize:15,color:"#1c2a1c",marginBottom:10}}>🥡 Where are you ordering from?</div>
+        {RESTAURANTS.map(r=><button key={r.name} onClick={async()=>{
+          const existingMeal=meals.find(m=>m.id===showTakeoutModal);
+          if(!existingMeal){
+            const parts=showTakeoutModal.split("-dinner-");
+            const day=parts[0]; const weekKey=parts[1];
+            const newMeal={
+              id:`${day.toLowerCase()}-d-${Date.now()}`,week_key:weekKey,day:day,date:"",
+              meal_type:"takeout",emoji:r.emoji,name:`Takeout — ${r.name}`,description:`Order from ${r.name}`,
+              store:null,store_type:null,cook:null,status:"draft",
+              ian:null,ian_note:"",kayla:null,kayla_note:"",cook_note:"",day_note:"",
+              recipe_id:null,original_recipe_id:null,swap_suggestion:null,swap_name:null,
+              takeout_restaurant:r.name,kayla_order:"",ian_order:"",takeout_cost:""
+            };
+            setMeals(prev=>[...prev,newMeal]);
+            await supabase.from("meals").insert(newMeal);
+          } else { planTakeout(showTakeoutModal,r); }
+          setShowTakeoutModal(null);
+        }} style={{width:"100%",background:"#fff",color:"#333",border:"1px solid #e0dbd0",borderRadius:10,padding:"11px 14px",fontFamily:"sans-serif",fontSize:13,cursor:"pointer",marginBottom:5,textAlign:"left"}}>{r.emoji} {r.name}</button>)}
+        <button onClick={()=>setShowTakeoutModal(null)} style={{width:"100%",background:"#f4f4f2",color:"#555",border:"none",borderRadius:10,padding:"11px",fontFamily:"sans-serif",fontSize:13,cursor:"pointer",marginTop:4}}>Cancel</button>
+      </div></div>}
 
       {/* Grocery trip */}
       {showGroceryTrip&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",display:"flex",alignItems:"flex-end",justifyContent:"center",zIndex:150}}><div style={{background:"#faf9f6",borderRadius:"22px 22px 0 0",width:"100%",maxWidth:560,padding:"18px 14px 40px",maxHeight:"85vh",overflowY:"auto"}}><div style={{fontFamily:"sans-serif",fontWeight:"bold",fontSize:15,color:"#1c2a1c",marginBottom:2}}>🛒 Grocery Trip</div><div style={{fontFamily:"sans-serif",fontSize:11,color:"#888",marginBottom:12}}>{tripItems.length} item{tripItems.length!==1?"s":""} added — updates pantry & grocery list</div>{tripItems.length>0&&<div style={{background:"#f4faf6",borderRadius:10,padding:"8px 12px",marginBottom:10}}>{tripItems.map((item,i)=><div key={i} style={{fontFamily:"sans-serif",fontSize:11,color:"#333",marginBottom:2,display:"flex",justifyContent:"space-between"}}><span>✅ {item.name} · {item.store}</span><span style={{color:"#2e7d5e"}}>{item.price?`$${item.price}`:""}</span></div>)}</div>}<div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:10}}><input value={tripItem.name} onChange={e=>setTripItem(t=>({...t,name:e.target.value}))} placeholder="Item name..." style={{border:"1px solid #ddd",borderRadius:8,padding:"9px 12px",fontFamily:"sans-serif",fontSize:13}}/><div style={{display:"flex",gap:6}}><select value={tripItem.store} onChange={e=>setTripItem(t=>({...t,store:e.target.value}))} style={{flex:1,border:"1px solid #ddd",borderRadius:8,padding:"7px",fontFamily:"sans-serif",fontSize:12}}>{STORES.map(s=><option key={s}>{s}</option>)}</select><input type="number" value={tripItem.price} onChange={e=>setTripItem(t=>({...t,price:e.target.value}))} placeholder="$ price" style={{flex:1,border:"1px solid #ddd",borderRadius:8,padding:"7px",fontFamily:"sans-serif",fontSize:12}}/></div><div style={{display:"flex",gap:6}}><input value={tripItem.qty} onChange={e=>setTripItem(t=>({...t,qty:e.target.value}))} placeholder="Qty" style={{flex:1,border:"1px solid #ddd",borderRadius:8,padding:"7px",fontFamily:"sans-serif",fontSize:12}}/><input type="date" value={tripItem.exp} onChange={e=>setTripItem(t=>({...t,exp:e.target.value}))} style={{flex:1,border:"1px solid #ddd",borderRadius:8,padding:"7px",fontFamily:"sans-serif",fontSize:11}}/></div></div><div style={{display:"flex",gap:6}}><button onClick={()=>{if(!tripItem.name.trim())return;setTripItems(p=>[...p,{...tripItem}]);setTripItem({name:"",store:"Aldi",price:"",qty:"1",exp:""});}} style={{flex:2,background:G,color:"#fff",border:"none",borderRadius:10,padding:"11px",fontFamily:"sans-serif",fontSize:13,cursor:"pointer"}}>+ Add Another</button><button onClick={finishGroceryTrip} style={{flex:1,background:"#2e7d5e",color:"#fff",border:"none",borderRadius:10,padding:"11px",fontFamily:"sans-serif",fontSize:13,cursor:"pointer"}}>✓ Done</button></div><button onClick={()=>{setShowGroceryTrip(false);setTripItems([]);}} style={{width:"100%",background:"#f4f4f2",color:"#555",border:"none",borderRadius:10,padding:"9px",fontFamily:"sans-serif",fontSize:13,cursor:"pointer",marginTop:6}}>Cancel</button></div></div>}

@@ -187,21 +187,36 @@ export default function App() {
 
   useEffect(()=>{loadData();},[loadData]);
 
-  // Real-time subscriptions
+  // Real-time subscriptions - use a cooldown to avoid overwriting own changes
+  const lastUpdateRef = useRef(0);
   useEffect(()=>{
-    const s1=supabase.channel("meals-rt").on("postgres_changes",{event:"*",schema:"public",table:"meals"},()=>loadData()).subscribe();
-    const s2=supabase.channel("recipes-rt").on("postgres_changes",{event:"*",schema:"public",table:"recipes"},()=>loadData()).subscribe();
-    const s3=supabase.channel("pantry-rt").on("postgres_changes",{event:"*",schema:"public",table:"pantry"},()=>loadData()).subscribe();
-    const s4=supabase.channel("grocery-rt").on("postgres_changes",{event:"*",schema:"public",table:"grocery"},()=>loadData()).subscribe();
+    const handleChange = () => {
+      const now = Date.now();
+      // Only reload if it's been more than 2 seconds since our last write
+      // This prevents our own updates from being overwritten
+      if (now - lastUpdateRef.current > 2000) {
+        loadData();
+      }
+    };
+    const s1=supabase.channel("meals-rt").on("postgres_changes",{event:"*",schema:"public",table:"meals"},handleChange).subscribe();
+    const s2=supabase.channel("recipes-rt").on("postgres_changes",{event:"*",schema:"public",table:"recipes"},handleChange).subscribe();
+    const s3=supabase.channel("pantry-rt").on("postgres_changes",{event:"*",schema:"public",table:"pantry"},handleChange).subscribe();
+    const s4=supabase.channel("grocery-rt").on("postgres_changes",{event:"*",schema:"public",table:"grocery"},handleChange).subscribe();
     return()=>{supabase.removeChannel(s1);supabase.removeChannel(s2);supabase.removeChannel(s3);supabase.removeChannel(s4);};
   },[loadData]);
 
   // ── Meal helpers ───────────────────────────────────────────────────────────
   const updateMeal = async (id, patch) => {
+    lastUpdateRef.current = Date.now();
     setMeals(prev=>prev.map(m=>m.id===id?{...m,...patch}:m));
     await supabase.from("meals").update(patch).eq("id",id);
   };
-  const vote=(id,person,val)=>{const m=meals.find(x=>x.id===id);updateMeal(id,{[person]:m[person]===val?null:val});};
+  const vote=(id,person,val)=>{
+    const m=meals.find(x=>x.id===id);
+    const newVal=m[person]===val?null:val;
+    // Track who disagrees for notification clarity
+    updateMeal(id,{[person]:newVal});
+  };
   const cycleStatus=(id)=>{
     const m=meals.find(x=>x.id===id);
     if(m.status==="set")return;
@@ -319,9 +334,23 @@ export default function App() {
   const openPantryCheck=(recipe,mealId)=>{
     const preChecks={};
     (recipe.ingredients||[]).forEach((ing,i)=>{
+      // Try exact pantryKey match first, then fuzzy name match
+      const key = `${mealId}-${i}`;
+      // Don't overwrite existing manual selections
+      if(pantryChecks[key]) return;
+      let p = null;
       if(ing.pantryKey){
-        const p=pantry.find(x=>x.name.toLowerCase()===ing.pantryKey.toLowerCase());
-        if(p&&!isLow(p))preChecks[`${mealId}-${i}`]="had";
+        p = pantry.find(x=>x.name.toLowerCase()===ing.pantryKey.toLowerCase());
+      }
+      // Fuzzy fallback - check if ingredient name contains a pantry item name
+      if(!p){
+        const ingName = ing.name.split("—")[0].split("(")[0].trim().toLowerCase();
+        p = pantry.find(x=>ingName.includes(x.name.toLowerCase().substring(0,6))||x.name.toLowerCase().includes(ingName.substring(0,6)));
+      }
+      if(p&&!isLow(p)){
+        preChecks[key]="had";
+      } else if(p&&isLow(p)){
+        preChecks[key]="bought"; // Pre-check as need to buy if low
       }
     });
     setPantryChecks(prev=>({...prev,...preChecks}));
@@ -329,7 +358,7 @@ export default function App() {
   };
 
   // Pantry helpers
-  const updatePantryItem=async(id,patch)=>{ setPantry(prev=>prev.map(p=>p.id===id?{...p,...patch}:p)); await supabase.from("pantry").update(patch).eq("id",id); };
+  const updatePantryItem=async(id,patch)=>{ lastUpdateRef.current=Date.now(); setPantry(prev=>prev.map(p=>p.id===id?{...p,...patch}:p)); await supabase.from("pantry").update(patch).eq("id",id); };
   const addPantryItem=async()=>{
     if(!addItemForm.name.trim())return;
     const qtyType=QTY_TYPE[addItemForm.category]||"words";
@@ -521,14 +550,19 @@ Total spent: $${totalSpent.toFixed(2)} of $500`;
 
         {/* Alerts */}
         <div style={{margin:"0 12px 6px",display:"flex",flexDirection:"column",gap:3}}>
-          {swapRequests.map(m=><div key={m.id} style={{background:"rgba(192,57,43,0.35)",border:"1px solid rgba(192,57,43,0.5)",borderRadius:7,padding:"4px 10px",fontFamily:"sans-serif",fontSize:11,color:"#ffd0c8"}}>👎 {m.ian==="disagree"?"Ian":"Kayla"} wants to swap {m.day}'s {m.name}{m.swap_name?` → ${m.swap_name}`:""}</div>)}
+          {swapRequests.flatMap(m=>{
+            const banners=[];
+            if(m.ian==="disagree") banners.push(<div key={`${m.id}-ian`} style={{background:"rgba(192,57,43,0.35)",border:"1px solid rgba(192,57,43,0.5)",borderRadius:7,padding:"4px 10px",fontFamily:"sans-serif",fontSize:11,color:"#ffd0c8"}}>👎 Ian wants to swap {m.day}'s {m.name}{m.swap_name?` → ${m.swap_name}`:""}</div>);
+            if(m.kayla==="disagree") banners.push(<div key={`${m.id}-kayla`} style={{background:"rgba(192,57,43,0.35)",border:"1px solid rgba(192,57,43,0.5)",borderRadius:7,padding:"4px 10px",fontFamily:"sans-serif",fontSize:11,color:"#ffd0c8"}}>👎 Kayla wants to swap {m.day}'s {m.name}{m.swap_name?` → ${m.swap_name}`:""}</div>);
+            return banners;
+          })}
           {lowPantry.length>0&&<div style={{background:"rgba(192,57,43,0.25)",border:"1px solid rgba(192,57,43,0.4)",borderRadius:7,padding:"4px 10px",fontFamily:"sans-serif",fontSize:11,color:"#ffd0c8"}}>⚠️ Low: {lowPantry.slice(0,3).map(p=>p.name).join(", ")}{lowPantry.length>3?` +${lowPantry.length-3} more`:""}</div>}
           {totalSavings>0&&<div style={{background:"rgba(46,125,94,0.25)",border:"1px solid rgba(46,125,94,0.4)",borderRadius:7,padding:"4px 10px",fontFamily:"sans-serif",fontSize:11,color:"#a0d4b8"}}>💰 Saving ${totalSavings.toFixed(2)} from pantry items</div>}
         </div>
 
         {/* 7-day strip */}
         {activeTab==="week"&&(
-          <div style={{display:"flex",borderTop:"1px solid rgba(255,255,255,0.1)"}}>
+          <div style={{display:"flex",borderTop:"1px solid rgba(255,255,255,0.1)",marginTop:4}}>
             {DAY_ORDER.map(day=>{
               const dinner=weekMeals.find(m=>m.day===day&&(m.meal_type==="dinner"||m.meal_type==="takeout"));
               const hasMeals=weekMeals.some(m=>m.day===day);
@@ -741,11 +775,20 @@ Total spent: $${totalSpent.toFixed(2)} of $500`;
       {activeTab==="grocery"&&(
         <div style={{padding:"14px 12px"}}>
           <button onClick={()=>setShowGroceryTrip(true)} style={{width:"100%",background:`linear-gradient(135deg,${G},#2e5c3e)`,color:"#fff",border:"none",borderRadius:12,padding:"13px",fontFamily:"sans-serif",fontSize:13,cursor:"pointer",marginBottom:12,fontWeight:"bold"}}>🛒 Start Grocery Trip</button>
-          <div style={{display:"flex",gap:6,marginBottom:12}}>
-            {[[TODAY_KEY,`📅 ${getWeekLabel(TODAY_KEY)}`],[ALL_WEEKS[ALL_WEEKS.indexOf(TODAY_KEY)+1]||TODAY_KEY,`📅 ${getWeekLabel(ALL_WEEKS[ALL_WEEKS.indexOf(TODAY_KEY)+1]||TODAY_KEY)}`]].map(([wk,label])=>(
-              <button key={wk} onClick={()=>setGroceryWeek(wk)} style={{flex:1,background:groceryWeek===wk?G:"#f4f4f2",color:groceryWeek===wk?"#fff":"#555",border:`1px solid ${groceryWeek===wk?G:"#ddd"}`,borderRadius:10,padding:"7px 4px",fontFamily:"sans-serif",fontSize:10,cursor:"pointer"}}>{label}</button>
-            ))}
-          </div>
+          {/* Week toggle for grocery */}
+          {(()=>{
+            const nextWeekKey = ALL_WEEKS[ALL_WEEKS.indexOf(TODAY_KEY)+1]||TODAY_KEY;
+            return (
+              <div style={{display:"flex",gap:6,marginBottom:12}}>
+                <button onClick={()=>setGroceryWeek(TODAY_KEY)} style={{flex:1,background:groceryWeek===TODAY_KEY?G:"#f4f4f2",color:groceryWeek===TODAY_KEY?"#fff":"#555",border:`1px solid ${groceryWeek===TODAY_KEY?G:"#ddd"}`,borderRadius:10,padding:"7px 4px",fontFamily:"sans-serif",fontSize:10,cursor:"pointer"}}>
+                  📅 {getWeekLabel(TODAY_KEY)}
+                </button>
+                <button onClick={()=>setGroceryWeek(nextWeekKey)} style={{flex:1,background:groceryWeek===nextWeekKey?G:"#f4f4f2",color:groceryWeek===nextWeekKey?"#fff":"#555",border:`1px solid ${groceryWeek===nextWeekKey?G:"#ddd"}`,borderRadius:10,padding:"7px 4px",fontFamily:"sans-serif",fontSize:10,cursor:"pointer"}}>
+                  📅 {getWeekLabel(nextWeekKey)}
+                </button>
+              </div>
+            );
+          })()}
 
           {/* From meals */}
           {mealIngredientsForWeek(groceryWeek).length>0&&(

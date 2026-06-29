@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { supabase } from "./supabase";
 import { initialMeals, initialRecipes, CURRENT_WEEK } from "./seedData";
 
@@ -187,29 +187,14 @@ export default function App() {
 
   useEffect(()=>{loadData();},[loadData]);
 
-  // Real-time subscriptions - use a cooldown to avoid overwriting own changes
-  const lastUpdateRef = useRef(0);
-  useEffect(()=>{
-    const handleChange = () => {
-      const now = Date.now();
-      // Only reload if it's been more than 2 seconds since our last write
-      // This prevents our own updates from being overwritten
-      if (now - lastUpdateRef.current > 2000) {
-        loadData();
-      }
-    };
-    const s1=supabase.channel("meals-rt").on("postgres_changes",{event:"*",schema:"public",table:"meals"},handleChange).subscribe();
-    const s2=supabase.channel("recipes-rt").on("postgres_changes",{event:"*",schema:"public",table:"recipes"},handleChange).subscribe();
-    const s3=supabase.channel("pantry-rt").on("postgres_changes",{event:"*",schema:"public",table:"pantry"},handleChange).subscribe();
-    const s4=supabase.channel("grocery-rt").on("postgres_changes",{event:"*",schema:"public",table:"grocery"},handleChange).subscribe();
-    return()=>{supabase.removeChannel(s1);supabase.removeChannel(s2);supabase.removeChannel(s3);supabase.removeChannel(s4);};
-  },[loadData]);
+  // No real-time subscriptions - use manual refresh button to see each other's changes
+  // This prevents race conditions where Supabase reloads overwrite local updates
 
   // ── Meal helpers ───────────────────────────────────────────────────────────
   const updateMeal = async (id, patch) => {
-    lastUpdateRef.current = Date.now();
     setMeals(prev=>prev.map(m=>m.id===id?{...m,...patch}:m));
-    await supabase.from("meals").update(patch).eq("id",id);
+    const { error } = await supabase.from("meals").update(patch).eq("id",id);
+    if(error) console.error("updateMeal error:", error);
   };
   const vote=(id,person,val)=>{
     const m=meals.find(x=>x.id===id);
@@ -244,65 +229,71 @@ export default function App() {
     setMealBackup(prev=>({...prev,[id]:null}));
   };
 
-  const planDay=(dayId,recipe)=>{
+  const planDay=async(dayId,recipe)=>{
     const existing=meals.find(m=>m.id===dayId);
-    updateMeal(dayId,{
-      recipe_id:recipe.id,
-      original_recipe_id:existing?.recipe_id||existing?.original_recipe_id||null,
-      name:recipe.name,
-      emoji:recipe.name.match(/^[^\w\s]+/)?.[0]||"🍽️",
-      description:recipe.description||"",
-      status:"draft",
-      meal_type:"meal",
-      takeout_restaurant:null,
-      kayla_order:null,
-      ian_order:null,
-      takeout_cost:null,
-      swap_suggestion:null,
-      swap_name:null
-    });
+    const emoji = recipe.name.match(/^(\p{Emoji_Presentation}|\p{Emoji}\uFE0F)/u)?.[0] || "🍽️";
+    const patch = {
+      recipe_id: recipe.id,
+      original_recipe_id: existing?.recipe_id || existing?.original_recipe_id || null,
+      name: recipe.name,
+      emoji: emoji,
+      description: recipe.description || "",
+      status: "draft",
+      meal_type: "meal",
+      takeout_restaurant: null,
+      kayla_order: null,
+      ian_order: null,
+      takeout_cost: null,
+      swap_suggestion: null,
+      swap_name: null
+    };
+    // Update local state immediately
+    setMeals(prev=>prev.map(m=>m.id===dayId?{...m,...patch}:m));
+    // Save to Supabase
+    const { error } = await supabase.from("meals").update(patch).eq("id",dayId);
+    if(error) console.error("planDay error:", error);
     setShowPlanDay(null);
   };
-  const planTakeout=(dayId,restaurant)=>{
+  const planTakeout=async(dayId,restaurant)=>{
     const existing=meals.find(m=>m.id===dayId);
-    updateMeal(dayId,{
-      name:`Takeout — ${restaurant.name}`,
-      emoji:restaurant.emoji,
-      description:`Order from ${restaurant.name}`,
-      status:"draft",
-      meal_type:"takeout",
-      takeout_restaurant:restaurant.name,
-      kayla_order:"",
-      ian_order:"",
-      takeout_cost:"",
-      original_recipe_id:existing?.recipe_id||existing?.original_recipe_id||null,
-      recipe_id:null,
-      swap_suggestion:null,
-      swap_name:null
-    });
+    const patch = {
+      name: `Takeout — ${restaurant.name}`,
+      emoji: restaurant.emoji,
+      description: `Order from ${restaurant.name}`,
+      status: "draft",
+      meal_type: "takeout",
+      takeout_restaurant: restaurant.name,
+      kayla_order: "",
+      ian_order: "",
+      takeout_cost: "",
+      original_recipe_id: existing?.recipe_id || existing?.original_recipe_id || null,
+      recipe_id: null,
+      swap_suggestion: null,
+      swap_name: null
+    };
+    setMeals(prev=>prev.map(m=>m.id===dayId?{...m,...patch}:m));
+    const { error } = await supabase.from("meals").update(patch).eq("id",dayId);
+    if(error) console.error("planTakeout error:", error);
     setShowTakeoutModal(null);
   };
-  const revertToMeal=(id)=>{
+  const revertToMeal=async(id)=>{
     const meal=meals.find(m=>m.id===id);
     const origRecipeId=meal?.original_recipe_id;
     const origRecipe=origRecipeId?recipes.find(r=>r.id===origRecipeId):null;
-    if(origRecipe){
-      updateMeal(id,{
-        meal_type:"meal",
-        recipe_id:origRecipeId,
-        original_recipe_id:null,
-        name:origRecipe.name,
-        emoji:origRecipe.name.match(/^[^\w\s]+/)?.[0]||"🍽️",
-        description:origRecipe.description||"",
-        status:"draft",
-        takeout_restaurant:null,
-        kayla_order:null,
-        ian_order:null,
-        takeout_cost:null
-      });
-    } else {
-      updateMeal(id,{meal_type:"meal",name:"Not planned yet",emoji:"❓",description:"Tap Plan Day to choose a meal",status:"draft",takeout_restaurant:null,kayla_order:null,ian_order:null,takeout_cost:null,recipe_id:null,original_recipe_id:null});
-    }
+    const patch = origRecipe ? {
+      meal_type:"meal", recipe_id:origRecipeId, original_recipe_id:null,
+      name:origRecipe.name, emoji:origRecipe.name.match(/^(\p{Emoji_Presentation}|\p{Emoji}\uFE0F)/u)?.[0]||"🍽️",
+      description:origRecipe.description||"", status:"draft",
+      takeout_restaurant:null, kayla_order:null, ian_order:null, takeout_cost:null
+    } : {
+      meal_type:"meal", name:"Not planned yet", emoji:"❓",
+      description:"Tap Plan Day to choose a meal", status:"draft",
+      takeout_restaurant:null, kayla_order:null, ian_order:null, takeout_cost:null,
+      recipe_id:null, original_recipe_id:null
+    };
+    setMeals(prev=>prev.map(m=>m.id===id?{...m,...patch}:m));
+    const { error } = await supabase.from("meals").update(patch).eq("id",id);
+    if(error) console.error("revertToMeal error:", error);
   };
 
   // Thaw
@@ -358,7 +349,11 @@ export default function App() {
   };
 
   // Pantry helpers
-  const updatePantryItem=async(id,patch)=>{ lastUpdateRef.current=Date.now(); setPantry(prev=>prev.map(p=>p.id===id?{...p,...patch}:p)); await supabase.from("pantry").update(patch).eq("id",id); };
+  const updatePantryItem=async(id,patch)=>{
+    setPantry(prev=>prev.map(p=>p.id===id?{...p,...patch}:p));
+    const { error } = await supabase.from("pantry").update(patch).eq("id",id);
+    if(error) console.error("updatePantryItem error:", error);
+  };
   const addPantryItem=async()=>{
     if(!addItemForm.name.trim())return;
     const qtyType=QTY_TYPE[addItemForm.category]||"words";
@@ -995,34 +990,27 @@ Total spent: $${totalSpent.toFixed(2)} of $500`;
       {showPlanDay&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",display:"flex",alignItems:"flex-end",justifyContent:"center",zIndex:150}}><div style={{background:"#faf9f6",borderRadius:"22px 22px 0 0",width:"100%",maxWidth:560,maxHeight:"80vh",overflowY:"auto",padding:"18px 14px 40px"}}>
         <div style={{fontFamily:"sans-serif",fontWeight:"bold",fontSize:15,color:"#1c2a1c",marginBottom:10}}>📖 Plan This Day</div>
         {recipes.map(r=><button key={r.id} onClick={async()=>{
-          // If planning a new meal for a day (no existing meal row), insert one
           const existingMeal=meals.find(m=>m.id===showPlanDay);
           if(!existingMeal){
-            // Parse day from the composite key: "Monday-dinner-2026-06-29"
+            // New meal for a blank day - parse "Monday-dinner-2026-06-29"
             const parts=showPlanDay.split("-dinner-");
             const day=parts[0];
             const weekKey=parts[1];
+            const emoji=r.name.match(/^(\p{Emoji_Presentation}|\p{Emoji}\uFE0F)/u)?.[0]||"🍽️";
             const newMeal={
-              id:`${day.toLowerCase()}-d-${Date.now()}`,
-              week_key:weekKey,
-              day:day,
-              date:"",
-              meal_type:"meal",
-              emoji:r.name.match(/^[^\w\s]+/)?.[0]||"🍽️",
-              name:r.name,
-              description:r.description||"",
-              store:r.store||null,
-              store_type:"instacart",
-              cook:null,
-              status:"draft",
-              ian:null,ian_note:"",kayla:null,kayla_note:"",cook_note:"",day_note:"",
-              recipe_id:r.id,original_recipe_id:null,swap_suggestion:null,swap_name:null,
-              takeout_restaurant:null,kayla_order:null,ian_order:null,takeout_cost:null
+              id:`${day.toLowerCase().replace(/\s/g,"")}-d-${Date.now()}`,
+              week_key:weekKey, day:day, date:"", meal_type:"meal",
+              emoji:emoji, name:r.name, description:r.description||"",
+              store:r.store||null, store_type:"instacart", cook:null, status:"draft",
+              ian:null, ian_note:"", kayla:null, kayla_note:"", cook_note:"", day_note:"",
+              recipe_id:r.id, original_recipe_id:null, swap_suggestion:null, swap_name:null,
+              takeout_restaurant:null, kayla_order:null, ian_order:null, takeout_cost:null
             };
             setMeals(prev=>[...prev,newMeal]);
-            await supabase.from("meals").insert(newMeal);
+            const { error } = await supabase.from("meals").insert(newMeal);
+            if(error) console.error("insert new meal error:", error);
           } else {
-            planDay(showPlanDay,r);
+            await planDay(showPlanDay, r);
           }
           setShowPlanDay(null);
         }} style={{width:"100%",background:"#fff",color:"#333",border:"1px solid #e0dbd0",borderRadius:10,padding:"12px 14px",fontFamily:"sans-serif",fontSize:13,cursor:"pointer",marginBottom:6,textAlign:"left",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
@@ -1042,16 +1030,20 @@ Total spent: $${totalSpent.toFixed(2)} of $500`;
             const parts=showTakeoutModal.split("-dinner-");
             const day=parts[0]; const weekKey=parts[1];
             const newMeal={
-              id:`${day.toLowerCase()}-d-${Date.now()}`,week_key:weekKey,day:day,date:"",
-              meal_type:"takeout",emoji:r.emoji,name:`Takeout — ${r.name}`,description:`Order from ${r.name}`,
-              store:null,store_type:null,cook:null,status:"draft",
-              ian:null,ian_note:"",kayla:null,kayla_note:"",cook_note:"",day_note:"",
-              recipe_id:null,original_recipe_id:null,swap_suggestion:null,swap_name:null,
-              takeout_restaurant:r.name,kayla_order:"",ian_order:"",takeout_cost:""
+              id:`${day.toLowerCase().replace(/\s/g,"")}-d-${Date.now()}`,
+              week_key:weekKey, day:day, date:"", meal_type:"takeout",
+              emoji:r.emoji, name:`Takeout — ${r.name}`, description:`Order from ${r.name}`,
+              store:null, store_type:null, cook:null, status:"draft",
+              ian:null, ian_note:"", kayla:null, kayla_note:"", cook_note:"", day_note:"",
+              recipe_id:null, original_recipe_id:null, swap_suggestion:null, swap_name:null,
+              takeout_restaurant:r.name, kayla_order:"", ian_order:"", takeout_cost:""
             };
             setMeals(prev=>[...prev,newMeal]);
-            await supabase.from("meals").insert(newMeal);
-          } else { planTakeout(showTakeoutModal,r); }
+            const { error } = await supabase.from("meals").insert(newMeal);
+            if(error) console.error("insert takeout error:", error);
+          } else {
+            await planTakeout(showTakeoutModal,r);
+          }
           setShowTakeoutModal(null);
         }} style={{width:"100%",background:"#fff",color:"#333",border:"1px solid #e0dbd0",borderRadius:10,padding:"11px 14px",fontFamily:"sans-serif",fontSize:13,cursor:"pointer",marginBottom:5,textAlign:"left"}}>{r.emoji} {r.name}</button>)}
         <button onClick={()=>setShowTakeoutModal(null)} style={{width:"100%",background:"#f4f4f2",color:"#555",border:"none",borderRadius:10,padding:"11px",fontFamily:"sans-serif",fontSize:13,cursor:"pointer",marginTop:4}}>Cancel</button>

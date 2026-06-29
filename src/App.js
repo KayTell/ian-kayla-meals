@@ -133,6 +133,7 @@ export default function App() {
   const [grocery, setGrocery] = useState([]);
   const [loading, setLoading] = useState(true);
   const [seeded, setSeeded] = useState(false);
+  // Open on the week closest to today that has meals, default to today
   const [selectedWeek, setSelectedWeek] = useState(TODAY_KEY);
   const [selectedDayIdx, setSelectedDayIdx] = useState(0);
   const [weekPickerOpen, setWeekPickerOpen] = useState(false);
@@ -182,6 +183,19 @@ export default function App() {
       setPantry(initialPantryData); setSeeded(true);
     } else { setPantry(pantryData||[]); if(pantryData&&pantryData.length>0)setSeeded(true); }
     setGrocery(groceryData||[]);
+    // Auto-select the best week to show: prefer current week if it has meals,
+    // otherwise fall back to the most recent week that has meals
+    if(mealsData&&mealsData.length>0){
+      const weeksInData=[...new Set(mealsData.map(m=>m.week_key))].sort();
+      const hasCurrentWeek=weeksInData.includes(TODAY_KEY);
+      if(!hasCurrentWeek){
+        // Find the closest week to today
+        const closest=weeksInData.reduce((prev,curr)=>{
+          return Math.abs(new Date(curr)-new Date(TODAY_KEY)) < Math.abs(new Date(prev)-new Date(TODAY_KEY)) ? curr : prev;
+        });
+        setSelectedWeek(closest);
+      }
+    }
     setLoading(false);
   }, [seeded]);
 
@@ -218,8 +232,9 @@ export default function App() {
   };
   const confirmMealChange=()=>{
     if(!confirmModal)return;
-    if(confirmModal.type==="planday") setShowPlanDay(confirmModal.mealId);
-    if(confirmModal.type==="takeout") setShowTakeoutModal(confirmModal.mealId);
+    // Pass as object so plan day modal knows it's editing an existing meal
+    if(confirmModal.type==="planday") setShowPlanDay({mealId:confirmModal.mealId,day:null,weekKey:null});
+    if(confirmModal.type==="takeout") setShowTakeoutModal({mealId:confirmModal.mealId,day:null,weekKey:null});
     setConfirmModal(null);
   };
   const undoMealChange=(id)=>{
@@ -624,8 +639,8 @@ Total spent: $${totalSpent.toFixed(2)} of $500`;
                       <div style={{fontSize:22,marginBottom:6}}>🍽️</div>
                       <div style={{fontFamily:"sans-serif",fontSize:13,color:"#888",marginBottom:12}}>Nothing planned yet</div>
                       <div style={{display:"flex",gap:8,justifyContent:"center"}}>
-                        <button onClick={()=>setShowPlanDay(`${selectedDay}-dinner-${selectedWeek}`)} style={{background:G,color:"#fff",border:"none",borderRadius:10,padding:"9px 16px",fontFamily:"sans-serif",fontSize:12,cursor:"pointer"}}>📖 Plan from Recipes</button>
-                        <button onClick={()=>setShowTakeoutModal(`${selectedDay}-dinner-${selectedWeek}`)} style={{background:"#e67e22",color:"#fff",border:"none",borderRadius:10,padding:"9px 16px",fontFamily:"sans-serif",fontSize:12,cursor:"pointer"}}>🥡 Takeout</button>
+                        <button onClick={()=>setShowPlanDay({mealId:null,day:selectedDay,weekKey:selectedWeek})} style={{background:G,color:"#fff",border:"none",borderRadius:10,padding:"9px 16px",fontFamily:"sans-serif",fontSize:12,cursor:"pointer"}}>📖 Plan from Recipes</button>
+                        <button onClick={()=>setShowTakeoutModal({mealId:null,day:selectedDay,weekKey:selectedWeek})} style={{background:"#e67e22",color:"#fff",border:"none",borderRadius:10,padding:"9px 16px",fontFamily:"sans-serif",fontSize:12,cursor:"pointer"}}>🥡 Takeout</button>
                       </div>
                     </div>
                   </div>
@@ -681,7 +696,7 @@ Total spent: $${totalSpent.toFixed(2)} of $500`;
                                 </div>
                                 <button onClick={()=>revertToMeal(meal.id)}
                                   style={{background:"#f4f4f2",color:"#555",border:"1px solid #ddd",borderRadius:8,padding:"6px 12px",fontFamily:"sans-serif",fontSize:11,cursor:"pointer"}}>
-                                  ↩ Not takeout — {hasBackup?`restore ${mealBackup[meal.id].name}`:"change meal"}
+                                  ↩ {meal.original_recipe_id?`Restore original meal`:"Not takeout — change meal"}
                                 </button>
                               </div>
                             )}
@@ -716,8 +731,8 @@ Total spent: $${totalSpent.toFixed(2)} of $500`;
                             {/* Change / Takeout buttons */}
                             {meal.status!=="set"&&!isTakeout&&(
                               <div style={{display:"flex",gap:7,marginBottom:10,flexWrap:"wrap"}}>
-                                <button onClick={()=>requestMealChange(meal.id,"planday")} style={{background:"#f4f4f2",color:"#555",border:"1px solid #ddd",borderRadius:8,padding:"5px 10px",fontSize:11,fontFamily:"sans-serif",cursor:"pointer"}}>🔄 Change Meal</button>
-                                <button onClick={()=>requestMealChange(meal.id,"takeout")} style={{background:"#fef5ec",color:"#e67e22",border:"1px solid #f0c96e",borderRadius:8,padding:"5px 10px",fontSize:11,fontFamily:"sans-serif",cursor:"pointer"}}>🥡 Make Takeout</button>
+                                <button onClick={()=>setConfirmModal({type:"planday",mealId:meal.id,mealName:meal.name})} style={{background:"#f4f4f2",color:"#555",border:"1px solid #ddd",borderRadius:8,padding:"5px 10px",fontSize:11,fontFamily:"sans-serif",cursor:"pointer"}}>🔄 Change Meal</button>
+                                <button onClick={()=>setConfirmModal({type:"takeout",mealId:meal.id,mealName:meal.name})} style={{background:"#fef5ec",color:"#e67e22",border:"1px solid #f0c96e",borderRadius:8,padding:"5px 10px",fontSize:11,fontFamily:"sans-serif",cursor:"pointer"}}>🥡 Make Takeout</button>
                               </div>
                             )}
 
@@ -990,16 +1005,16 @@ Total spent: $${totalSpent.toFixed(2)} of $500`;
       {showPlanDay&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",display:"flex",alignItems:"flex-end",justifyContent:"center",zIndex:150}}><div style={{background:"#faf9f6",borderRadius:"22px 22px 0 0",width:"100%",maxWidth:560,maxHeight:"80vh",overflowY:"auto",padding:"18px 14px 40px"}}>
         <div style={{fontFamily:"sans-serif",fontWeight:"bold",fontSize:15,color:"#1c2a1c",marginBottom:10}}>📖 Plan This Day</div>
         {recipes.map(r=><button key={r.id} onClick={async()=>{
-          const existingMeal=meals.find(m=>m.id===showPlanDay);
-          if(!existingMeal){
-            // New meal for a blank day - parse "Monday-dinner-2026-06-29"
-            const parts=showPlanDay.split("-dinner-");
-            const day=parts[0];
-            const weekKey=parts[1];
-            const emoji=r.name.match(/^(\p{Emoji_Presentation}|\p{Emoji}\uFE0F)/u)?.[0]||"🍽️";
+          const {mealId, day, weekKey} = showPlanDay;
+          if(mealId){
+            // Editing an existing meal row
+            await planDay(mealId, r);
+          } else {
+            // Creating a new meal for a blank day
+            const emoji=r.name.match(/^\p{Emoji}/u)?.[0]||"🍽️";
+            const newId=`${(day||"").toLowerCase().replace(/\s/g,"")}-d-${Date.now()}`;
             const newMeal={
-              id:`${day.toLowerCase().replace(/\s/g,"")}-d-${Date.now()}`,
-              week_key:weekKey, day:day, date:"", meal_type:"meal",
+              id:newId, week_key:weekKey, day:day, date:"", meal_type:"meal",
               emoji:emoji, name:r.name, description:r.description||"",
               store:r.store||null, store_type:"instacart", cook:null, status:"draft",
               ian:null, ian_note:"", kayla:null, kayla_note:"", cook_note:"", day_note:"",
@@ -1007,10 +1022,8 @@ Total spent: $${totalSpent.toFixed(2)} of $500`;
               takeout_restaurant:null, kayla_order:null, ian_order:null, takeout_cost:null
             };
             setMeals(prev=>[...prev,newMeal]);
-            const { error } = await supabase.from("meals").insert(newMeal);
-            if(error) console.error("insert new meal error:", error);
-          } else {
-            await planDay(showPlanDay, r);
+            const {error}=await supabase.from("meals").insert(newMeal);
+            if(error) console.error("insert meal error:",error);
           }
           setShowPlanDay(null);
         }} style={{width:"100%",background:"#fff",color:"#333",border:"1px solid #e0dbd0",borderRadius:10,padding:"12px 14px",fontFamily:"sans-serif",fontSize:13,cursor:"pointer",marginBottom:6,textAlign:"left",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
@@ -1025,13 +1038,13 @@ Total spent: $${totalSpent.toFixed(2)} of $500`;
       {showTakeoutModal&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",display:"flex",alignItems:"flex-end",justifyContent:"center",zIndex:150}}><div style={{background:"#faf9f6",borderRadius:"22px 22px 0 0",width:"100%",maxWidth:560,maxHeight:"80vh",overflowY:"auto",padding:"18px 14px 40px"}}>
         <div style={{fontFamily:"sans-serif",fontWeight:"bold",fontSize:15,color:"#1c2a1c",marginBottom:10}}>🥡 Where are you ordering from?</div>
         {RESTAURANTS.map(r=><button key={r.name} onClick={async()=>{
-          const existingMeal=meals.find(m=>m.id===showTakeoutModal);
-          if(!existingMeal){
-            const parts=showTakeoutModal.split("-dinner-");
-            const day=parts[0]; const weekKey=parts[1];
+          const {mealId, day, weekKey} = showTakeoutModal;
+          if(mealId){
+            await planTakeout(mealId, r);
+          } else {
+            const newId=`${(day||"").toLowerCase().replace(/\s/g,"")}-d-${Date.now()}`;
             const newMeal={
-              id:`${day.toLowerCase().replace(/\s/g,"")}-d-${Date.now()}`,
-              week_key:weekKey, day:day, date:"", meal_type:"takeout",
+              id:newId, week_key:weekKey, day:day, date:"", meal_type:"takeout",
               emoji:r.emoji, name:`Takeout — ${r.name}`, description:`Order from ${r.name}`,
               store:null, store_type:null, cook:null, status:"draft",
               ian:null, ian_note:"", kayla:null, kayla_note:"", cook_note:"", day_note:"",
@@ -1039,10 +1052,8 @@ Total spent: $${totalSpent.toFixed(2)} of $500`;
               takeout_restaurant:r.name, kayla_order:"", ian_order:"", takeout_cost:""
             };
             setMeals(prev=>[...prev,newMeal]);
-            const { error } = await supabase.from("meals").insert(newMeal);
-            if(error) console.error("insert takeout error:", error);
-          } else {
-            await planTakeout(showTakeoutModal,r);
+            const {error}=await supabase.from("meals").insert(newMeal);
+            if(error) console.error("insert takeout error:",error);
           }
           setShowTakeoutModal(null);
         }} style={{width:"100%",background:"#fff",color:"#333",border:"1px solid #e0dbd0",borderRadius:10,padding:"11px 14px",fontFamily:"sans-serif",fontSize:13,cursor:"pointer",marginBottom:5,textAlign:"left"}}>{r.emoji} {r.name}</button>)}

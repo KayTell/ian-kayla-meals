@@ -183,23 +183,25 @@ export default function App() {
       setPantry(initialPantryData); setSeeded(true);
     } else { setPantry(pantryData||[]); if(pantryData&&pantryData.length>0)setSeeded(true); }
     setGrocery(groceryData||[]);
-    // Auto-select the best week to show: prefer current week if it has meals,
-    // otherwise fall back to the most recent week that has meals
-    if(mealsData&&mealsData.length>0){
-      const weeksInData=[...new Set(mealsData.map(m=>m.week_key))].sort();
-      const hasCurrentWeek=weeksInData.includes(TODAY_KEY);
-      if(!hasCurrentWeek){
-        // Find the closest week to today
-        const closest=weeksInData.reduce((prev,curr)=>{
-          return Math.abs(new Date(curr)-new Date(TODAY_KEY)) < Math.abs(new Date(prev)-new Date(TODAY_KEY)) ? curr : prev;
-        });
-        setSelectedWeek(closest);
-      }
-    }
     setLoading(false);
   }, [seeded]);
 
   useEffect(()=>{loadData();},[loadData]);
+
+  // Auto-select best week once meals are loaded
+  useEffect(()=>{
+    if(meals.length===0) return;
+    const weeksInData=[...new Set(meals.map(m=>m.week_key))].sort();
+    // If today's week has meals, stay on it
+    if(weeksInData.includes(TODAY_KEY)) return;
+    // Otherwise find the closest week with meals to today
+    const closest=weeksInData.reduce((prev,curr)=>{
+      return Math.abs(new Date(curr)-new Date(TODAY_KEY))<Math.abs(new Date(prev)-new Date(TODAY_KEY))?curr:prev;
+    });
+    setSelectedWeek(closest);
+  // Only run once after first load
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[meals.length>0]);
 
   // No real-time subscriptions - use manual refresh button to see each other's changes
   // This prevents race conditions where Supabase reloads overwrite local updates
@@ -246,7 +248,7 @@ export default function App() {
 
   const planDay=async(dayId,recipe)=>{
     const existing=meals.find(m=>m.id===dayId);
-    const emoji = recipe.name.match(/^(\p{Emoji_Presentation}|\p{Emoji}\uFE0F)/u)?.[0] || "🍽️";
+    const emoji = recipe.name.match(/^\p{Emoji}/u)?.[0] || "🍽️";
     const patch = {
       recipe_id: recipe.id,
       original_recipe_id: existing?.recipe_id || existing?.original_recipe_id || null,
@@ -262,11 +264,18 @@ export default function App() {
       swap_suggestion: null,
       swap_name: null
     };
-    // Update local state immediately
     setMeals(prev=>prev.map(m=>m.id===dayId?{...m,...patch}:m));
-    // Save to Supabase
-    const { error } = await supabase.from("meals").update(patch).eq("id",dayId);
-    if(error) console.error("planDay error:", error);
+    // Check if row exists in DB first
+    const {data:check} = await supabase.from("meals").select("id").eq("id",dayId).single();
+    if(check){
+      const {error}=await supabase.from("meals").update(patch).eq("id",dayId);
+      if(error) console.error("planDay update error:", error);
+    } else {
+      // Row doesn't exist, insert it
+      const fullMeal={...existing,...patch,id:dayId};
+      const {error}=await supabase.from("meals").insert(fullMeal);
+      if(error) console.error("planDay insert error:", error);
+    }
     setShowPlanDay(null);
   };
   const planTakeout=async(dayId,restaurant)=>{
@@ -287,8 +296,15 @@ export default function App() {
       swap_name: null
     };
     setMeals(prev=>prev.map(m=>m.id===dayId?{...m,...patch}:m));
-    const { error } = await supabase.from("meals").update(patch).eq("id",dayId);
-    if(error) console.error("planTakeout error:", error);
+    const {data:check}=await supabase.from("meals").select("id").eq("id",dayId).single();
+    if(check){
+      const {error}=await supabase.from("meals").update(patch).eq("id",dayId);
+      if(error) console.error("planTakeout update error:", error);
+    } else {
+      const fullMeal={...existing,...patch,id:dayId};
+      const {error}=await supabase.from("meals").insert(fullMeal);
+      if(error) console.error("planTakeout insert error:", error);
+    }
     setShowTakeoutModal(null);
   };
   const revertToMeal=async(id)=>{

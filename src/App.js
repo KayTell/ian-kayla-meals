@@ -198,7 +198,6 @@ export default function App() {
       return Math.abs(new Date(curr)-new Date(TODAY_KEY))<Math.abs(new Date(prev)-new Date(TODAY_KEY))?curr:prev;
     });
     setSelectedWeek(closest);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   },[mealCount]);
 
   // No real-time subscriptions - use manual refresh button to see each other's changes

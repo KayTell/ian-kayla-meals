@@ -189,19 +189,17 @@ export default function App() {
   useEffect(()=>{loadData();},[loadData]);
 
   // Auto-select best week once meals are loaded
+  const mealCount = meals.length;
   useEffect(()=>{
-    if(meals.length===0) return;
+    if(mealCount===0) return;
     const weeksInData=[...new Set(meals.map(m=>m.week_key))].sort();
-    // If today's week has meals, stay on it
     if(weeksInData.includes(TODAY_KEY)) return;
-    // Otherwise find the closest week with meals to today
     const closest=weeksInData.reduce((prev,curr)=>{
       return Math.abs(new Date(curr)-new Date(TODAY_KEY))<Math.abs(new Date(prev)-new Date(TODAY_KEY))?curr:prev;
     });
     setSelectedWeek(closest);
-  // Only run once after first load
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[meals.length>0]);
+  },[mealCount]);
 
   // No real-time subscriptions - use manual refresh button to see each other's changes
   // This prevents race conditions where Supabase reloads overwrite local updates
@@ -248,7 +246,7 @@ export default function App() {
 
   const planDay=async(dayId,recipe)=>{
     const existing=meals.find(m=>m.id===dayId);
-    const emoji = recipe.name.match(/^\p{Emoji}/u)?.[0] || "🍽️";
+    const emoji = recipe.name.match(/^[^\w\s]/)?.[0] || "🍽️";
     const patch = {
       recipe_id: recipe.id,
       original_recipe_id: existing?.recipe_id || existing?.original_recipe_id || null,
@@ -313,7 +311,7 @@ export default function App() {
     const origRecipe=origRecipeId?recipes.find(r=>r.id===origRecipeId):null;
     const patch = origRecipe ? {
       meal_type:"meal", recipe_id:origRecipeId, original_recipe_id:null,
-      name:origRecipe.name, emoji:origRecipe.name.match(/^(\p{Emoji_Presentation}|\p{Emoji}\uFE0F)/u)?.[0]||"🍽️",
+      name:origRecipe.name, emoji:origRecipe.name.match(/^[^\w\s]/)?.[0]||"🍽️",
       description:origRecipe.description||"", status:"draft",
       takeout_restaurant:null, kayla_order:null, ian_order:null, takeout_cost:null
     } : {
@@ -1027,7 +1025,7 @@ Total spent: $${totalSpent.toFixed(2)} of $500`;
             await planDay(mealId, r);
           } else {
             // Creating a new meal for a blank day
-            const emoji=r.name.match(/^\p{Emoji}/u)?.[0]||"🍽️";
+            const emoji=r.name.match(/^[^\w\s]/)?.[0]||"🍽️";
             const newId=`${(day||"").toLowerCase().replace(/\s/g,"")}-d-${Date.now()}`;
             const newMeal={
               id:newId, week_key:weekKey, day:day, date:"", meal_type:"meal",
